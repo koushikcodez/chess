@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Chess - Play in Person</title>
+<style>
+/* ===== STYLE: how the page looks ===== */
+:root{--bg:#f4f1ea;--fg:#222;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1e1e1c;--fg:#eee}}
+:root[data-theme="dark"]{--bg:#1e1e1c;--fg:#eee}
+body{background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif;text-align:center;margin:0;padding:12px}
+/* The board is a grid with 8 equal columns */
+#board{display:grid;grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr);box-sizing:border-box;width:min(92vw,520px);height:min(92vw,520px);margin:12px auto;border:3px solid #5a4630}
+.sq{position:relative;aspect-ratio:1/1;min-width:0;min-height:0;overflow:hidden;line-height:1;display:flex;align-items:center;justify-content:center;font-size:min(9vw,52px);cursor:pointer;user-select:none}
+.light{background:#f0d9b5}.dark{background:#b58863}
+.sel{background:#f6f669!important}      /* the piece you picked */
+.check{background:#ff6b6b!important}    /* king in check */
+.dot::after{content:"";position:absolute;width:30%;height:30%;border-radius:50%;background:rgba(0,0,0,.3)} /* possible move */
+.cap::after{width:88%;height:88%;background:none;border:5px solid rgba(0,0,0,.3);box-sizing:border-box}   /* possible capture */
+.w{color:#fff;text-shadow:0 0 2px #000,0 0 2px #000,0 0 3px #000}
+.b{color:#111}
+#status{font-size:1.2rem;font-weight:600;min-height:1.6em}
+button{padding:8px 18px;font-size:1rem;border-radius:8px;border:1px solid #888;cursor:pointer}
+</style></head>
+<body>
+<h2>Chess - Play in Person</h2>
+<div id="status"></div>
+<div id="board"></div>
+<button onclick="newGame()">New Game</button>
+
+<script>
+/* ===== DATA: how the game is stored =====
+   board[row][col] is null (empty) or a 2-letter string:
+   first letter = colour (w/b), second = piece (K King, Q Queen, R Rook, B Bishop, N Knight, P Pawn).
+   Row 0 is the top of the screen (black side), row 7 is the bottom (white side). */
+const START = ["rnbqkbnr","pppppppp","........","........","........","........","PPPPPPPP","RNBQKBNR"];
+const GLYPH = {K:"♚",Q:"♛",R:"♜",B:"♝",N:"♞",P:"♟"};
+
+let board, turn, castle, ep, selected, moves, over;
+// turn = whose move ("w"/"b"); castle = which castling rights are still allowed;
+// ep = square where en passant capture is possible; selected = clicked piece; moves = its legal moves
+
+function newGame(){
+  // Turn the text rows above into the board array
+  board = START.map(row => [...row].map(ch => ch==="." ? null : (ch===ch.toLowerCase()?"b":"w")+ch.toUpperCase()));
+  turn="w"; castle={wK:1,wQ:1,bK:1,bQ:1}; ep=null; selected=null; moves=[]; over=false;
+  render();
+}
+
+const inside = (r,c) => r>=0 && r<8 && c>=0 && c<8;   // is this square on the board?
+
+/* ===== MOVE RULES =====
+   rawMoves = where a piece could go by its movement rules, IGNORING whether it leaves its own king in danger.
+   attackOnly = true means "which squares does this piece attack" (used to detect check). */
+function rawMoves(b, r, c, attackOnly=false){
+  const p=b[r][c], col=p[0], type=p[1], out=[];
+  const add=(rr,cc,extra={})=>out.push({r:rr,c:cc,...extra});
+  const enemy=(rr,cc)=>b[rr][cc] && b[rr][cc][0]!==col;
+
+  if(type==="P"){                                   // PAWN
+    const d = col==="w" ? -1 : 1, startRow = col==="w" ? 6 : 1; // white moves up (-1), black down (+1)
+    for(const dc of [-1,1]){                        // diagonal: captures only
+      const rr=r+d, cc=c+dc; if(!inside(rr,cc)) continue;
+      if(attackOnly) add(rr,cc);
+      else if(enemy(rr,cc)) add(rr,cc);
+      else if(ep && ep[0]===rr && ep[1]===cc) add(rr,cc,{ep:true});   // en passant
+    }
+    if(!attackOnly && inside(r+d,c) && !b[r+d][c]){ // forward: only into empty squares
+      add(r+d,c);
+      if(r===startRow && !b[r+2*d][c]) add(r+2*d,c); // first move can be two squares
+    }
+  } else if(type==="N" || type==="K"){              // KNIGHT & KING: fixed jumps
+    const jumps = type==="N"
+      ? [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]]
+      : [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
+    for(const [dr,dc] of jumps){
+      const rr=r+dr, cc=c+dc;
+      if(inside(rr,cc) && (!b[rr][cc] || enemy(rr,cc))) add(rr,cc);
+    }
+    if(type==="K" && !attackOnly){                  // CASTLING
+      const row = col==="w"?7:0, opp = col==="w"?"b":"w";
+      if(r===row && c===4 && !attacked(b,row,4,opp)){
+        if(castle[col+"K"] && !b[row][5] && !b[row][6] && !attacked(b,row,5,opp) && !attacked(b,row,6,opp)) add(row,6,{castle:"K"});
+        if(castle[col+"Q"] && !b[row][1] && !b[row][2] && !b[row][3] && !attacked(b,row,3,opp) && !attacked(b,row,2,opp)) add(row,2,{castle:"Q"});
+      }
+    }
+  } else {                                          // ROOK, BISHOP, QUEEN: slide until blocked
+    const straight=[[-1,0],[1,0],[0,-1],[0,1]], diagonal=[[-1,-1],[-1,1],[1,-1],[1,1]];
+    const dirs = type==="R" ? straight : type==="B" ? diagonal : straight.concat(diagonal);
+    for(const [dr,dc] of dirs){
+      let rr=r+dr, cc=c+dc;
+      while(inside(rr,cc)){
+        if(!b[rr][cc]) add(rr,cc);                  // empty: keep sliding
+        else { if(enemy(rr,cc)) add(rr,cc); break; }// enemy: capture then stop; own piece: stop
+        rr+=dr; cc+=dc;
+      }
+    }
+  }
+  return out;
+}
+
+// Is square (r,c) attacked by any piece of colour byCol?
+function attacked(b, r, c, byCol){
+  for(let i=0;i<8;i++) for(let j=0;j<8;j++)
+    if(b[i][j] && b[i][j][0]===byCol && rawMoves(b,i,j,true).some(m=>m.r===r&&m.c===c)) return true;
+  return false;
+}
+
+// Is the king of this colour currently in check?
+function inCheck(b, col){
+  for(let i=0;i<8;i++) for(let j=0;j<8;j++)
+    if(b[i][j]===col+"K") return attacked(b,i,j,col==="w"?"b":"w");
+}
+
+// Play a move on a COPY of the board (so we can test moves safely)
+function applyMove(b, fr, fc, m){
+  const nb=b.map(row=>[...row]);
+  const piece=nb[fr][fc];
+  nb[m.r][m.c]=piece; nb[fr][fc]=null;
+  if(m.ep) nb[fr][m.c]=null;                                 // en passant removes the passed pawn
+  if(m.castle){ const row=m.r;                               // castling also moves the rook
+    if(m.castle==="K"){ nb[row][5]=nb[row][7]; nb[row][7]=null; }
+    else { nb[row][3]=nb[row][0]; nb[row][0]=null; } }
+  if(piece[1]==="P" && (m.r===0||m.r===7)) nb[m.r][m.c]=piece[0]+"Q"; // pawn reaching the end becomes a Queen
+  return nb;
+}
+
+// LEGAL moves = raw moves that do not leave your own king in check
+function legalMoves(b, r, c){
+  const col=b[r][c][0];
+  return rawMoves(b,r,c).filter(m => !inCheck(applyMove(b,r,c,m), col));
+}
+
+function hasAnyMove(b, col){
+  for(let i=0;i<8;i++) for(let j=0;j<8;j++)
+    if(b[i][j] && b[i][j][0]===col && legalMoves(b,i,j).length) return true;
+  return false;
+}
+
+/* ===== CLICK HANDLING: what happens when a player touches a square ===== */
+function clickSquare(r,c){
+  if(over) return;
+  const m = moves.find(x=>x.r===r && x.c===c);
+  if(selected && m){ makeMove(m); return; }                  // clicked a highlighted square: move there
+  if(board[r][c] && board[r][c][0]===turn){                  // clicked own piece: select it, show moves
+    selected=[r,c]; moves=legalMoves(board,r,c);
+  } else { selected=null; moves=[]; }
+  render();
+}
+
+function makeMove(m){
+  const [fr,fc]=selected, piece=board[fr][fc];
+  // Update castling rights if king/rook moved or a rook was captured
+  if(piece[1]==="K"){ castle[turn+"K"]=0; castle[turn+"Q"]=0; }
+  for(const [rr,cc,key] of [[7,0,"wQ"],[7,7,"wK"],[0,0,"bQ"],[0,7,"bK"]])
+    if((fr===rr&&fc===cc)||(m.r===rr&&m.c===cc)) castle[key]=0;
+  // Remember en passant square if a pawn just moved two squares
+  ep = (piece[1]==="P" && Math.abs(m.r-fr)===2) ? [(m.r+fr)/2, fc] : null;
+  board=applyMove(board,fr,fc,m);
+  turn = turn==="w" ? "b" : "w";                             // switch players
+  selected=null; moves=[];
+  render();
+}
+
+/* ===== DRAWING: redraws the board and status text ===== */
+function render(){
+  const el=document.getElementById("board"); el.innerHTML="";
+  const check=inCheck(board,turn);
+  for(let r=0;r<8;r++) for(let c=0;c<8;c++){
+    const d=document.createElement("div");
+    d.className="sq "+((r+c)%2?"dark":"light");
+    if(selected && selected[0]===r && selected[1]===c) d.classList.add("sel");
+    if(check && board[r][c]===turn+"K") d.classList.add("check");
+    const mv=moves.find(x=>x.r===r&&x.c===c);
+    if(mv) d.classList.add(board[r][c]||mv.ep ? "cap":"dot");
+    if(board[r][c]) d.innerHTML=`<span class="${board[r][c][0]}">${GLYPH[board[r][c][1]]}</span>`;
+    d.onclick=()=>clickSquare(r,c);
+    el.appendChild(d);
+  }
+  // Game-end detection: no legal moves = checkmate (if in check) or stalemate (draw)
+  const name = turn==="w" ? "White" : "Black";
+  let s = name+" to move";
+  if(!hasAnyMove(board,turn)){
+    over=true;
+    s = check ? "Checkmate! "+(turn==="w"?"Black":"White")+" wins!" : "Stalemate - draw!";
+  } else if(check) s = name+" is in CHECK!";
+  document.getElementById("status").textContent=s;
+}
+
+newGame();
+</script>
+</body></html>
